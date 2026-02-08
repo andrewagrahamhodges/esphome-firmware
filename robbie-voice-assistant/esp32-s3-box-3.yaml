@@ -159,6 +159,14 @@ speaker:
   - platform: esp_adf
     id: box_speaker
 
+# Voice assistant (required for audio validation, but we won't use HA pipeline)
+voice_assistant:
+  id: va
+  microphone: box_mic
+  speaker: box_speaker
+  on_listening:
+    - logger.log: "VA listening triggered"
+
 # ================== Wake Word (on-device) ==================
 micro_wake_word:
   microphone: box_mic

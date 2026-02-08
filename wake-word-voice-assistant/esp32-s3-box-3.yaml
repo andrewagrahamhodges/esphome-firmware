@@ -636,12 +636,12 @@ image:
     resize: 320x240
     type: RGB24
     use_transparency: true
-  - file: https://github.com/esphome/firmware/raw/main/voice-assistant/error_box_illustrations/error-no-wifi.png
+  - file: https://github.com/andrewagrahamhodges/esphome-firmware/raw/main/voice-assistant/error_box_illustrations/error-no-wifi.png
     id: error_no_wifi
     resize: 320x240
     type: RGB24
     use_transparency: true
-  - file: https://github.com/esphome/firmware/raw/main/voice-assistant/error_box_illustrations/error-no-ha.png
+  - file: https://github.com/andrewagrahamhodges/esphome-firmware/raw/main/voice-assistant/error_box_illustrations/error-no-ha.png
     id: error_no_ha
     resize: 320x240
     type: RGB24
@@ -712,7 +712,7 @@ color:
 
 file:
   - id: timer_finished_wave_file
-    file: https://github.com/esphome/firmware/raw/main/voice-assistant/sounds/timer_finished.wav
+    file: https://github.com/andrewagrahamhodges/esphome-firmware/raw/main/voice-assistant/sounds/timer_finished.wav
 
 spi:
   - id: spi_bus
