@@ -1,0 +1,42 @@
+substitutions:
+  name: esp32-s3-box-3-050374
+  friendly_name: ESP32 S3 Box 3 050374
+packages:
+  esphome.voice-assistant: github://esphome/firmware/wake-word-voice-assistant/esp32-s3-box-3.yaml@main
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+  friendly_name: ${friendly_name}
+
+speaker: !remove
+
+voice_assistant:
+  speaker: !remove box_speaker
+  on_tts_stream_start: !remove
+  on_tts_stream_end: !remove
+  on_tts_start:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+    - script.execute: draw_display
+  on_tts_end:
+    - homeassistant.service:
+        service: media_player.play_media
+        data:
+          entity_id: media_player.living_room_speaker_2
+          media_content_id: !lambda "return x;"
+          media_content_type: music
+          announce: "true"
+    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - script.execute: draw_display
+  on_timer_finished: !remove
+
+api:
+  encryption:
+    key: VnyyY3K9poFzkMQMcCe33owxvNTIRRrmmQWyLaM41E0=
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+ota:
+  - platform: esphome
+    password: uJJTZzQh8MfDBoNwdhTKYCJcDGQDukQn
