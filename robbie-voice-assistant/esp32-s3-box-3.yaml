@@ -1,22 +1,14 @@
 ---
-# Robbie Voice Assistant for ESP32-S3-Box-3
-# Direct connection to OpenClaw VPS, bypassing HA Assist pipeline
+# Robbie Voice Box - Minimal ESP32-S3-Box-3 Firmware
 
 substitutions:
   name: robbie-box
   friendly_name: Robbie Voice Box
-  
-  # VPS endpoint for audio streaming
-  vps_host: "robbie.openclaw.hodges.nl"
-  vps_port: "8081"  # Dedicated port for voice
-  
-  # Wake word - using built-in "okay_nabu" for now
-  # TODO: Train custom "hey_robbie" model
-  micro_wake_word_model: okay_nabu
 
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
   min_version: 2024.6.0
   platformio_options:
     board_build.flash_mode: dio
@@ -24,11 +16,8 @@ esphome:
     name: hodges.robbie-voice
     version: "0.1.0"
   on_boot:
-    priority: 600
     then:
-      - script.execute: draw_display
-      - lambda: |-
-          ESP_LOGI("robbie", "Robbie Voice Box booting...");
+      - script.execute: update_display
 
 esp32:
   board: esp32s3box
@@ -44,7 +33,6 @@ esp32:
     components:
       - name: esp32_s3_box_3_board
         source: github://jesserockz/esp32-s3-box-3-board@main
-        refresh: 0s
 
 psram:
   mode: octal
@@ -53,12 +41,15 @@ psram:
 external_components:
   - source: github://pr#5230
     components: esp_adf
-    refresh: 0s
-  # TODO: Add custom robbie_voice component
-  # - source: ./custom_components
-  #   components: [robbie_voice]
 
-# Minimal API for OTA updates and monitoring
+i2c:
+  sda: GPIO8
+  scl: GPIO18
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+
 api:
   encryption:
     key: !secret api_key
@@ -71,70 +62,72 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "Robbie-Box-Fallback"
+    ssid: "Robbie-Box-Setup"
     password: !secret ap_password
 
-logger:
-  hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+captive_portal:
 
-# HTTP for posting status/receiving commands
-http_request:
-  useragent: "RobbieBox/0.1"
-  timeout: 10s
+# ================== Sensors for HA ==================
+sensor:
+  - platform: internal_temperature
+    name: "S3 Temperature"
+    entity_category: diagnostic
 
-# Audio hardware
-esp_adf:
-  board: esp32s3box3
+  - platform: aht10
+    variant: AHT20
+    temperature:
+      name: "Temperature"
+      id: sensor_temp
+    humidity:
+      name: "Humidity"
+      id: sensor_humidity
+    address: 0x38
+    update_interval: 60s
 
-microphone:
-  - platform: esp_adf
-    id: box_mic
-    adc_type: external
-    i2s_audio_id: i2s_audio_internal
+  - platform: wifi_signal
+    name: "WiFi dB"
+    id: wifi_signal_db
+    entity_category: diagnostic
+    update_interval: 60s
 
-speaker:
-  - platform: esp_adf
-    id: box_speaker
+  - platform: copy
+    source_id: wifi_signal_db
+    name: "WiFi Signal"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: diagnostic
 
-i2s_audio:
-  - id: i2s_audio_internal
-    i2s_lrclk_pin: GPIO45
-    i2s_bclk_pin: GPIO17
-    i2s_mclk_pin: GPIO2
+  - platform: uptime
+    name: "Device Uptime"
+    entity_category: diagnostic
 
-# On-device wake word detection
-micro_wake_word:
-  model: ${micro_wake_word_model}
-  on_wake_word_detected:
-    - logger.log: "Wake word detected! Starting recording..."
-    - globals.set:
-        id: is_listening
-        value: "true"
-    - script.execute: draw_display
-    - script.execute: record_and_send
-    # TODO: Integrate with custom component to stream audio
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
+    ssid:
+      name: "SSID"
+      entity_category: diagnostic
+    bssid:
+      name: "BSSID"
+      entity_category: diagnostic
 
-# Physical controls
 binary_sensor:
+  - platform: gpio
+    pin: GPIO21
+    name: "Presence Detect"
+    device_class: occupancy
+
   - platform: gpio
     pin:
       number: GPIO1
       inverted: true
     name: "Mute Switch"
-    id: mute_switch
-    on_press:
-      - micro_wake_word.stop
-      - globals.set:
-          id: is_muted
-          value: "true"
-      - script.execute: draw_display
-    on_release:
-      - micro_wake_word.start
-      - globals.set:
-          id: is_muted
-          value: "false"
-      - script.execute: draw_display
+    id: hw_mute
+    on_state:
+      - script.execute: update_display
 
   - platform: gpio
     pin:
@@ -142,161 +135,147 @@ binary_sensor:
       mode: INPUT_PULLUP
       inverted: true
     name: "Top Button"
-    id: top_button
-    on_press:
-      - logger.log: "Manual trigger - starting recording"
-      - globals.set:
-          id: is_listening
-          value: "true"
-      - script.execute: draw_display
-      - script.execute: record_and_send
+    on_click:
+      - if:
+          condition:
+            lambda: return !id(hw_mute).state;
+          then:
+            - script.execute: start_listening
 
-# Display backlight
+button:
+  - platform: restart
+    name: "Reboot"
+    entity_category: diagnostic
+
+# ================== Audio Hardware ==================
+esp_adf:
+  board: esp32s3box3
+
+microphone:
+  - platform: esp_adf
+    id: box_mic
+
+speaker:
+  - platform: esp_adf
+    id: box_speaker
+
+# ================== Wake Word (on-device) ==================
+micro_wake_word:
+  microphone: box_mic
+  models:
+    - model: okay_nabu
+  on_wake_word_detected:
+    - if:
+        condition:
+          lambda: return !id(hw_mute).state;
+        then:
+          - logger.log: "Wake word detected!"
+          - script.execute: start_listening
+
+# ================== State & Scripts ==================
+globals:
+  - id: voice_state
+    type: int
+    initial_value: "0"
+
+script:
+  - id: start_listening
+    mode: single
+    then:
+      - micro_wake_word.stop:
+      - globals.set:
+          id: voice_state
+          value: "1"
+      - script.execute: update_display
+      - logger.log: "Recording audio..."
+      - delay: 3s
+      - globals.set:
+          id: voice_state
+          value: "2"
+      - script.execute: update_display
+      - logger.log: "Sending to Robbie..."
+      - delay: 2s
+      - globals.set:
+          id: voice_state
+          value: "0"
+      - script.execute: update_display
+      - micro_wake_word.start:
+
+  - id: update_display
+    then:
+      - lambda: |-
+          if (id(hw_mute).state) {
+            id(voice_state) = 3;
+          }
+          switch(id(voice_state)) {
+            case 1: id(lcd).show_page(page_listening); break;
+            case 2: id(lcd).show_page(page_thinking); break;
+            case 3: id(lcd).show_page(page_muted); break;
+            default: id(lcd).show_page(page_idle); break;
+          }
+          id(lcd).update();
+
+# ================== Display ==================
 output:
   - platform: ledc
     pin: GPIO47
-    id: backlight_output
+    id: backlight
 
 light:
   - platform: monochromatic
     id: lcd_backlight
     name: "LCD Backlight"
-    output: backlight_output
+    output: backlight
     restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
 
-# State tracking
-globals:
-  - id: is_listening
-    type: bool
-    restore_value: false
-    initial_value: "false"
-  - id: is_muted
-    type: bool
-    restore_value: false
-    initial_value: "false"
-  - id: is_processing
-    type: bool
-    restore_value: false
-    initial_value: "false"
-  - id: last_status
-    type: std::string
-    restore_value: false
-    initial_value: '"Ready"'
-
-# Scripts
-script:
-  - id: record_and_send
-    mode: single
-    then:
-      - logger.log: "Recording audio..."
-      # TODO: This is where custom component takes over
-      # For now, just simulate the flow
-      - delay: 3s  # Simulate recording time
-      - globals.set:
-          id: is_listening
-          value: "false"
-      - globals.set:
-          id: is_processing
-          value: "true"
-      - script.execute: draw_display
-      - logger.log: "Sending to VPS..."
-      # HTTP POST would go here with actual audio data
-      - http_request.post:
-          url: "http://${vps_host}:${vps_port}/voice/ping"
-          headers:
-            Content-Type: "application/json"
-          json: |-
-            root["device"] = "${name}";
-            root["event"] = "wake_word_triggered";
-          on_response:
-            then:
-              - logger.log:
-                  format: "VPS response: %d"
-                  args: ["response->status_code"]
-      - delay: 2s  # Simulate processing
-      - globals.set:
-          id: is_processing
-          value: "false"
-      - globals.set:
-          id: last_status
-          value: '"Done"'
-      - script.execute: draw_display
-
-  - id: draw_display
-    then:
-      - lambda: |-
-          if (id(is_muted)) {
-            id(s3_box_lcd).show_page(muted_page);
-          } else if (id(is_listening)) {
-            id(s3_box_lcd).show_page(listening_page);
-          } else if (id(is_processing)) {
-            id(s3_box_lcd).show_page(thinking_page);
-          } else {
-            id(s3_box_lcd).show_page(idle_page);
-          }
-          id(s3_box_lcd).update();
-
-# Display
 spi:
-  - id: spi_bus
-    clk_pin: 7
-    mosi_pin: 6
+  clk_pin: GPIO7
+  mosi_pin: GPIO6
 
 font:
+  - file: "gfonts://Roboto@500"
+    id: font_title
+    size: 36
   - file: "gfonts://Roboto"
-    id: font_large
-    size: 32
-  - file: "gfonts://Roboto"
-    id: font_medium
+    id: font_sub
     size: 20
-
-color:
-  - id: color_white
-    white: 100%
-  - id: color_black
-    red: 0%
-    green: 0%
-    blue: 0%
-  - id: color_blue
-    red: 0%
-    green: 50%
-    blue: 100%
-  - id: color_orange
-    red: 100%
-    green: 60%
-    blue: 0%
 
 display:
   - platform: ili9xxx
-    id: s3_box_lcd
+    id: lcd
     model: S3BOX
+    invert_colors: true
     data_rate: 40MHz
-    cs_pin: 5
-    dc_pin: 4
+    cs_pin: GPIO5
+    dc_pin: GPIO4
     reset_pin:
-      number: 48
+      number: GPIO48
       inverted: true
     update_interval: never
     pages:
-      - id: idle_page
+      - id: page_idle
         lambda: |-
-          it.fill(id(color_black));
-          it.printf(160, 100, id(font_large), id(color_white), TextAlign::CENTER, "🐶 Robbie");
-          it.printf(160, 150, id(font_medium), id(color_white), TextAlign::CENTER, "Say 'OK Nabu'");
-      
-      - id: listening_page
+          it.fill(Color(0, 0, 0));
+          it.printf(160, 90, id(font_title), Color(255,255,255), TextAlign::CENTER, "Robbie");
+          it.printf(160, 140, id(font_sub), Color(150,150,150), TextAlign::CENTER, "Say OK Nabu");
+          if (!std::isnan(id(sensor_temp).state)) {
+            it.printf(160, 200, id(font_sub), Color(80,80,80), TextAlign::CENTER, "%.1fC  %.0f%%", id(sensor_temp).state, id(sensor_humidity).state);
+          }
+
+      - id: page_listening
         lambda: |-
-          it.fill(id(color_blue));
-          it.printf(160, 100, id(font_large), id(color_white), TextAlign::CENTER, "🎤 Listening");
-          it.printf(160, 150, id(font_medium), id(color_white), TextAlign::CENTER, "Speak now...");
-      
-      - id: thinking_page
+          it.fill(Color(0, 60, 120));
+          it.printf(160, 100, id(font_title), Color(255,255,255), TextAlign::CENTER, "Listening...");
+          it.printf(160, 160, id(font_sub), Color(200,200,255), TextAlign::CENTER, "Speak now");
+
+      - id: page_thinking
         lambda: |-
-          it.fill(id(color_orange));
-          it.printf(160, 100, id(font_large), id(color_black), TextAlign::CENTER, "🤔 Thinking");
-          it.printf(160, 150, id(font_medium), id(color_black), TextAlign::CENTER, "Processing...");
-      
-      - id: muted_page
+          it.fill(Color(120, 60, 0));
+          it.printf(160, 100, id(font_title), Color(255,255,255), TextAlign::CENTER, "Thinking...");
+          it.printf(160, 160, id(font_sub), Color(255,200,150), TextAlign::CENTER, "Processing");
+
+      - id: page_muted
         lambda: |-
-          it.fill(id(color_black));
-          it.printf(160, 120, id(font_large), id(color_white), TextAlign::CENTER, "🔇 Muted");
+          it.fill(Color(40, 0, 0));
+          it.printf(160, 120, id(font_title), Color(255,100,100), TextAlign::CENTER, "Muted");
